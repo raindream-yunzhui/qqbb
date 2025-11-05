@@ -46,6 +46,64 @@ sync_fork() {
     fi
 }
 
+# 改进的 PR 状态检查函数
+get_pr_status() {
+    local pr_url=$1
+    local max_retries=3
+    local retry_count=0
+    
+    while [ $retry_count -lt $max_retries ]; do
+        # 方法1: 使用完整的 PR 信息查询
+        pr_info=$(gh pr view "$pr_url" --json state,merged,url,number 2>/dev/null)
+        
+        if [ $? -eq 0 ] && [ -n "$pr_info" ]; then
+            state=$(echo "$pr_info" | jq -r '.state')
+            merged=$(echo "$pr_info" | jq -r '.merged')
+            pr_number=$(echo "$pr_info" | jq -r '.number')
+            
+            echo "$state,$merged,$pr_number"
+            return 0
+        fi
+        
+        # 方法2: 如果上面失败，尝试分别获取状态和合并状态
+        if [ $? -ne 0 ]; then
+            state=$(gh pr view "$pr_url" --json state --jq '.state' 2>/dev/null)
+            merged=$(gh pr view "$pr_url" --json merged --jq '.merged' 2>/dev/null)
+            
+            if [ $? -eq 0 ] && [ -n "$state" ] && [ -n "$merged" ]; then
+                echo "$state,$merged,0"
+                return 0
+            fi
+        fi
+        
+        # 方法3: 使用 PR API 直接查询
+        if command -v jq >/dev/null 2>&1; then
+            # 从 PR URL 提取仓库和 PR 编号
+            if [[ "$pr_url" =~ https://github.com/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
+                owner="${BASH_REMATCH[1]}"
+                repo="${BASH_REMATCH[2]}"
+                pr_num="${BASH_REMATCH[3]}"
+                
+                api_result=$(gh api "repos/$owner/$repo/pulls/$pr_num" --jq '{state: .state, merged: .merged}' 2>/dev/null)
+                if [ $? -eq 0 ]; then
+                    state=$(echo "$api_result" | jq -r '.state')
+                    merged=$(echo "$api_result" | jq -r '.merged')
+                    echo "$state,$merged,$pr_num"
+                    return 0
+                fi
+            fi
+        fi
+        
+        retry_count=$((retry_count + 1))
+        if [ $retry_count -lt $max_retries ]; then
+            echo "⚠️  获取 PR 状态失败，重试中... ($retry_count/$max_retries)"
+            sleep 2
+        fi
+    done
+    
+    return 1
+}
+
 # 等待 PR 合并的函数
 wait_for_pr_merge() {
     local pr_url=$1
@@ -56,12 +114,38 @@ wait_for_pr_merge() {
     echo "提示: 你可以按 Ctrl+C 中断等待，手动确认后继续"
     echo "----------------------------------------"
     
+    # 验证 GitHub CLI 是否安装和登录
+    if ! command -v gh &> /dev/null; then
+        echo "❌ GitHub CLI (gh) 未安装，请先安装: https://cli.github.com/"
+        read -p "PR 已合并? (y/n): " manual_confirm
+        if [ "$manual_confirm" = "y" ] || [ "$manual_confirm" = "Y" ]; then
+            return 0
+        else
+            echo "❌ 操作已取消"
+            exit 1
+        fi
+    fi
+    
+    if ! gh auth status &> /dev/null; then
+        echo "❌ GitHub CLI 未登录，请先运行: gh auth login"
+        read -p "PR 已合并? (y/n): " manual_confirm
+        if [ "$manual_confirm" = "y" ] || [ "$manual_confirm" = "Y" ]; then
+            return 0
+        else
+            echo "❌ 操作已取消"
+            exit 1
+        fi
+    fi
+    
     while true; do
         # 获取 PR 状态
-        pr_state=$(gh pr view "$pr_url" --json state,merged --jq '.state + "," + (.merged | tostring)' 2>/dev/null)
+        pr_status=$(get_pr_status "$pr_url")
         
-        if [ $? -ne 0 ]; then
-            echo "⚠️  无法获取 PR 状态，请手动确认 PR 是否已合并"
+        if [ $? -ne 0 ] || [ -z "$pr_status" ]; then
+            echo "⚠️  无法获取 PR 状态，可能的原因："
+            echo "   - PR URL 不正确"
+            echo "   - 网络连接问题"
+            echo "   - 没有访问该 PR 的权限"
             read -p "PR 已合并? (y/n): " manual_confirm
             if [ "$manual_confirm" = "y" ] || [ "$manual_confirm" = "Y" ]; then
                 echo "✅ 手动确认 PR 已合并"
@@ -73,8 +157,11 @@ wait_for_pr_merge() {
             fi
         fi
         
-        state=$(echo "$pr_state" | cut -d',' -f1)
-        merged=$(echo "$pr_state" | cut -d',' -f2)
+        state=$(echo "$pr_status" | cut -d',' -f1)
+        merged=$(echo "$pr_status" | cut -d',' -f2)
+        pr_number=$(echo "$pr_status" | cut -d',' -f3)
+        
+        echo "🔍 PR 状态: state=$state, merged=$merged"
         
         if [ "$merged" = "true" ]; then
             echo "✅ PR 已成功合并!"
@@ -131,23 +218,41 @@ while true; do
         # Fork 项目：创建 PR 到上游仓库
         echo "正在创建 Pull Request 到上游仓库..."
         UPSTREAM_REPO=$(git remote get-url upstream | sed 's/.*github.com[:/]//' | sed 's/\.git$//')
-        pr_url=$(gh pr create \
+        pr_create_output=$(gh pr create \
             --title "$branch_name" \
             --body " " \
             --base main \
-            --repo "$UPSTREAM_REPO" 2>&1 | grep -o 'https://github.com[^ ]*')
+            --repo "$UPSTREAM_REPO" 2>&1)
         
-        echo "✅ Pull Request 已创建到上游仓库"
+        # 改进的 PR URL 提取
+        if [[ "$pr_create_output" =~ (https://github.com/[^[:space:]]+) ]]; then
+            pr_url="${BASH_REMATCH[1]}"
+            echo "✅ Pull Request 已创建到上游仓库: $pr_url"
+        else
+            echo "⚠️  无法提取 PR URL，输出为: $pr_create_output"
+            # 尝试从输出中手动提取
+            pr_url=$(echo "$pr_create_output" | grep -o 'https://github.com/[^ ]*' | head -1)
+        fi
+        
         echo -e "\033[1;35;5m⏳  (2/2) 快去通知baobao你新建了PR!\033[0m"
     else
         # 非 Fork 项目：创建 PR 到本仓库的 main 分支
         echo "正在创建 Pull Request 到本仓库..."
-        pr_url=$(gh pr create \
+        pr_create_output=$(gh pr create \
             --title "$branch_name" \
             --body " " \
-            --base main 2>&1 | grep -o 'https://github.com[^ ]*')
+            --base main 2>&1)
         
-        echo "✅ Pull Request 已创建"
+        # 改进的 PR URL 提取
+        if [[ "$pr_create_output" =~ (https://github.com/[^[:space:]]+) ]]; then
+            pr_url="${BASH_REMATCH[1]}"
+            echo "✅ Pull Request 已创建: $pr_url"
+        else
+            echo "⚠️  无法提取 PR URL，输出为: $pr_create_output"
+            # 尝试从输出中手动提取
+            pr_url=$(echo "$pr_create_output" | grep -o 'https://github.com/[^ ]*' | head -1)
+        fi
+        
         echo -e "\033[1;35;5m⏳  (2/2) 请审查并合并 PR!\033[0m"
     fi
     
