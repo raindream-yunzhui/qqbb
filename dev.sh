@@ -127,7 +127,6 @@ wait_for_pr_merge() {
     local pr_url=$1
     local check_interval=10  # 每10秒检查一次
     
-    echo -e "\033[1;35;5m⏳  正在等待 PR 合并...\033[0m"
     echo "PR 链接: $pr_url"
     echo "提示: 你可以按 Ctrl+C 中断等待，手动确认后继续"
     echo "----------------------------------------"
@@ -253,7 +252,7 @@ while true; do
     fi
     
     # 开发阶段
-    echo -e "\033[1;33;5m⚠️  开始打开logseq更新笔记吧! 更新完成后请按回车继续...\033[0m"
+    echo -e "\033[1;33;5m⚠️  (1/2) 开始打开logseq更新笔记吧! 更新完成后请按回车继续...\033[0m"
     read -p ""
     
     # 提交更改
@@ -285,7 +284,7 @@ while true; do
             pr_url=$(echo "$pr_create_output" | grep -o 'https://github.com/[^ ]*' | head -1)
         fi
         
-        echo -e "\033[1;35;5m⏳  (2/2) 快去通知baobao你新建了PR!\033[0m"
+        echo -e "\033[1;33;5m⚠️  (2/2) 快去通知baobao你新建了PR! 期间你不需要做任何操作! PR被merged之后本脚本会自动执行后续指令! 等待期间也不要再编辑笔记!\033[0m"
     else
         # 非 Fork 项目：创建 PR 到本仓库的 main 分支
         echo "正在创建 Pull Request 到本仓库..."
