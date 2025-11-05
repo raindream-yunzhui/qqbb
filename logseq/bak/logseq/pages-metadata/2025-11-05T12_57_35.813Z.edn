@@ -78,7 +78,7 @@
   :block/updated-at 1762329281762}
  {:block/name "nov 5th, 2025",
   :block/created-at 1762325424843,
-  :block/updated-at 1762347043407}
+  :block/updated-at 1762330555540}
  {:block/name "now",
   :block/created-at 1762325509793,
   :block/updated-at 1762325509793}
@@ -94,9 +94,6 @@
  {:block/name "soul",
   :block/created-at 1762328096382,
   :block/updated-at 1762328096382}
- {:block/name "test",
-  :block/created-at 1762346560902,
-  :block/updated-at 1762346560902}
  {:block/name "todo",
   :block/created-at 1762325509793,
   :block/updated-at 1762325509793}
